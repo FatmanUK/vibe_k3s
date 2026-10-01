@@ -1,0 +1,7 @@
+---
+- name: Validate the K3s cluster and refresh local artifacts
+  hosts: k3s_bootstrap
+  become: true
+  gather_facts: false
+  roles:
+    - role: cluster_validate

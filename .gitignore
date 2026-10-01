@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.retry
+
+# Keep secrets out of source control.
+inventories/*/group_vars/all/vault.yml
+
+# Generated cluster credentials and reports.
+artifacts/*
+!artifacts/.gitkeep

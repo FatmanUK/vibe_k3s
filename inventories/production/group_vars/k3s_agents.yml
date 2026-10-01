@@ -1,0 +1,7 @@
+---
+# Use a non-reserved label during kubelet registration. The standard
+# node-role.kubernetes.io/worker label is applied by the validation role via
+# the Kubernetes API after the node has joined.
+k3s_node_labels:
+  - "node-type=worker"
+k3s_node_taints: []

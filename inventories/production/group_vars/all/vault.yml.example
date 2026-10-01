@@ -1,0 +1,4 @@
+---
+# Generate each value with: openssl rand -hex 32
+vault_k3s_server_token: "replace-with-a-long-random-server-token"
+vault_k3s_agent_token: "replace-with-a-different-long-random-agent-token"

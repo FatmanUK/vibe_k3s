@@ -1,0 +1,104 @@
+---
+- name: Validate inventory topology
+  ansible.builtin.assert:
+    that:
+      - groups.get('k3s_bootstrap', []) | length == 1
+      - groups.get('k3s_server_joiners', []) | length >= 2
+      - groups.get('k3s_servers', []) | length >= 3
+      - (groups.get('k3s_servers', []) | length) % 2 == 1
+      - groups.get('k3s_agents', []) | length >= 1
+      - (groups.get('k3s_bootstrap', []) | intersect(groups.get('k3s_server_joiners', [])) | length) == 0
+      - >-
+        groups.get('k3s_servers', []) | difference(
+          (groups.get('k3s_bootstrap', []) + groups.get('k3s_server_joiners', [])) | unique
+        ) | length == 0
+      - >-
+        ((groups.get('k3s_bootstrap', []) + groups.get('k3s_server_joiners', [])) | unique)
+        | difference(groups.get('k3s_servers', [])) | length == 0
+      - (groups.get('k3s_servers', []) | intersect(groups.get('k3s_agents', [])) | length) == 0
+    fail_msg: >-
+      Define one bootstrap server, at least two joining servers, an odd total
+      number of K3s servers, and at least one agent. A host cannot be both a
+      server and an agent.
+
+- name: Validate cluster configuration
+  ansible.builtin.assert:
+    that:
+      - k3s_version is match('^v[0-9]+\.[0-9]+\.[0-9]+.*\+k3s[0-9]+$')
+      - k3s_registration_address | trim | length > 0
+      - "'://' not in k3s_registration_address"
+      - "'/' not in k3s_registration_address"
+      - k3s_api_port | int > 0
+      - k3s_api_port | int < 65536
+      - k3s_flannel_backend in ['vxlan', 'host-gw', 'wireguard-native', 'none']
+      - k3s_cluster_cidr != k3s_service_cidr
+      - k3s_tls_sans is sequence
+      - k3s_tls_sans is not string
+      - k3s_disable_components is sequence
+      - k3s_disable_components is not string
+      - k3s_etcd_snapshot_retention | int > 0
+      - k3s_service_start_timeout | int > 0
+      - k3s_api_ready_retries | int > 0
+      - k3s_api_ready_delay | int > 0
+      - k3s_cluster_ready_timeout | int > 0
+    fail_msg: "One or more K3s settings are invalid. Review group_vars/all/main.yml."
+
+- name: Validate join credentials
+  ansible.builtin.assert:
+    that:
+      - k3s_server_token | default('') | length >= 32
+      - k3s_agent_token | default('') | length >= 32
+      - k3s_server_token != 'replace-with-a-long-random-server-token'
+      - k3s_agent_token != 'replace-with-a-different-long-random-agent-token'
+      - k3s_server_token != k3s_agent_token
+    fail_msg: >-
+      Supply persistent random server and agent tokens through Ansible Vault
+      or the K3S_SERVER_TOKEN and K3S_AGENT_TOKEN environment variables.
+  no_log: true
+
+- name: Validate extra K3s configuration maps
+  ansible.builtin.assert:
+    that:
+      - k3s_server_extra_config is mapping
+      - k3s_agent_extra_config is mapping
+      - k3s_download_environment is mapping
+      - k3s_install_environment is mapping
+      - >-
+        k3s_server_extra_config.keys()
+        | intersect(k3s_server_managed_config_keys)
+        | length == 0
+      - >-
+        k3s_agent_extra_config.keys()
+        | intersect(k3s_agent_managed_config_keys)
+        | length == 0
+    fail_msg: >-
+      Extra configuration maps must be dictionaries and must not redefine keys
+      already managed by config.yaml.j2.
+  vars:
+    k3s_common_managed_config_keys:
+      - node-name
+      - node-ip
+      - node-external-ip
+      - flannel-iface
+      - server
+      - token
+      - node-label
+      - node-taint
+    k3s_server_managed_config_keys: >-
+      {{ k3s_common_managed_config_keys + [
+        'agent-token',
+        'cluster-init',
+        'write-kubeconfig-mode',
+        'cluster-cidr',
+        'service-cidr',
+        'cluster-dns',
+        'cluster-domain',
+        'flannel-backend',
+        'secrets-encryption',
+        'etcd-snapshot-schedule-cron',
+        'etcd-snapshot-retention',
+        'etcd-snapshot-compress',
+        'tls-san',
+        'disable'
+      ] }}
+    k3s_agent_managed_config_keys: "{{ k3s_common_managed_config_keys }}"

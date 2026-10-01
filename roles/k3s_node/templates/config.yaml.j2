@@ -1,0 +1,58 @@
+# Managed by Ansible. Local changes will be overwritten.
+node-name: {{ (k3s_node_name | default(inventory_hostname)) | to_json }}
+node-ip: {{ (k3s_node_ip | default(ansible_default_ipv4.address)) | to_json }}
+{% if k3s_node_external_ip | default('') | length > 0 %}
+node-external-ip: {{ k3s_node_external_ip | to_json }}
+{% endif %}
+{% if k3s_flannel_iface | default('') | length > 0 %}
+flannel-iface: {{ k3s_flannel_iface | to_json }}
+{% endif %}
+{% if k3s_node_role == 'server' %}
+token: {{ k3s_server_token | to_json }}
+agent-token: {{ k3s_agent_token | to_json }}
+{% if k3s_cluster_init | bool %}
+cluster-init: true
+{% else %}
+server: {{ k3s_server_url | to_json }}
+{% endif %}
+write-kubeconfig-mode: {{ k3s_write_kubeconfig_mode | to_json }}
+cluster-cidr: {{ k3s_cluster_cidr | to_json }}
+service-cidr: {{ k3s_service_cidr | to_json }}
+cluster-dns: {{ k3s_cluster_dns | to_json }}
+cluster-domain: {{ k3s_cluster_domain | to_json }}
+flannel-backend: {{ k3s_flannel_backend | to_json }}
+secrets-encryption: {{ k3s_secrets_encryption | bool | lower }}
+etcd-snapshot-schedule-cron: {{ k3s_etcd_snapshot_schedule_cron | to_json }}
+etcd-snapshot-retention: {{ k3s_etcd_snapshot_retention | int }}
+etcd-snapshot-compress: {{ k3s_etcd_snapshot_compress | bool | lower }}
+{% set effective_sans = ([k3s_registration_address] + k3s_tls_sans) | unique | list %}
+tls-san:
+{% for san in effective_sans %}
+  - {{ san | to_json }}
+{% endfor %}
+{% if k3s_disable_components | length > 0 %}
+disable:
+{% for component in k3s_disable_components %}
+  - {{ component | to_json }}
+{% endfor %}
+{% endif %}
+{% else %}
+server: {{ k3s_server_url | to_json }}
+token: {{ k3s_agent_token | to_json }}
+{% endif %}
+{% if k3s_node_labels | default([]) | length > 0 %}
+node-label:
+{% for label in k3s_node_labels %}
+  - {{ label | to_json }}
+{% endfor %}
+{% endif %}
+{% if k3s_node_taints | default([]) | length > 0 %}
+node-taint:
+{% for taint in k3s_node_taints %}
+  - {{ taint | to_json }}
+{% endfor %}
+{% endif %}
+{% set extra_config = k3s_server_extra_config if k3s_node_role == 'server' else k3s_agent_extra_config %}
+{% if extra_config | length > 0 %}
+{{ extra_config | to_nice_yaml(indent=2, sort_keys=false) }}
+{% endif %}

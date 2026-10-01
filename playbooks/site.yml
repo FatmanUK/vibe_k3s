@@ -1,0 +1,57 @@
+---
+- name: Validate the K3s inventory and settings
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: preflight
+      tags: [always]
+
+- name: Prepare all K3s hosts
+  hosts: k3s_cluster
+  become: true
+  gather_facts: true
+  roles:
+    - role: prerequisites
+      tags: [prerequisites]
+
+- name: Initialize the first K3s server and embedded-etcd member
+  hosts: k3s_bootstrap
+  become: true
+  serial: 1
+  roles:
+    - role: k3s_node
+      vars:
+        k3s_node_role: server
+        k3s_cluster_init: true
+      tags: [k3s, servers]
+
+- name: Join the remaining K3s server and embedded-etcd members
+  hosts: k3s_server_joiners
+  become: true
+  serial: 1
+  roles:
+    - role: k3s_node
+      vars:
+        k3s_node_role: server
+        k3s_cluster_init: false
+      tags: [k3s, servers]
+
+- name: Join K3s worker nodes
+  hosts: k3s_agents
+  become: true
+  serial: 1
+  roles:
+    - role: k3s_node
+      vars:
+        k3s_node_role: agent
+        k3s_cluster_init: false
+      tags: [k3s, agents]
+
+- name: Validate the completed cluster and export credentials
+  hosts: k3s_bootstrap
+  become: true
+  gather_facts: false
+  roles:
+    - role: cluster_validate
+      tags: [validate]

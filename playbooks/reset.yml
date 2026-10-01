@@ -1,0 +1,73 @@
+---
+- name: Require explicit confirmation before removing K3s
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Confirm destructive reset
+      ansible.builtin.assert:
+        that:
+          - k3s_reset_confirmation | default('') == 'destroy'
+        fail_msg: >-
+          This play removes K3s and all cluster data. Re-run with
+          -e k3s_reset_confirmation=destroy to continue.
+
+- name: Remove K3s agents first
+  hosts: k3s_agents
+  become: true
+  gather_facts: false
+  serial: 1
+  tasks:
+    - name: Check for the K3s agent uninstall script
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s-agent-uninstall.sh
+      register: k3s_agent_uninstall
+
+    - name: Uninstall the K3s agent
+      ansible.builtin.command: /usr/local/bin/k3s-agent-uninstall.sh
+      when: k3s_agent_uninstall.stat.exists
+      changed_when: true
+
+- name: Remove joined K3s servers
+  hosts: k3s_server_joiners
+  become: true
+  gather_facts: false
+  serial: 1
+  tasks:
+    - name: Check for the K3s server uninstall script
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s-uninstall.sh
+      register: k3s_server_uninstall
+
+    - name: Uninstall the K3s server
+      ansible.builtin.command: /usr/local/bin/k3s-uninstall.sh
+      when: k3s_server_uninstall.stat.exists
+      changed_when: true
+
+- name: Remove the bootstrap K3s server last
+  hosts: k3s_bootstrap
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check for the K3s server uninstall script
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s-uninstall.sh
+      register: k3s_bootstrap_uninstall
+
+    - name: Uninstall the bootstrap K3s server
+      ansible.builtin.command: /usr/local/bin/k3s-uninstall.sh
+      when: k3s_bootstrap_uninstall.stat.exists
+      changed_when: true
+
+- name: Remove locally exported cluster credentials
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Remove generated artifacts
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ playbook_dir }}/../artifacts/kubeconfig"
+        - "{{ playbook_dir }}/../artifacts/nodes.txt"

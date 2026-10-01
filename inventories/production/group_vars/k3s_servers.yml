@@ -1,0 +1,6 @@
+---
+# K3s assigns the control-plane/etcd role labels itself. Keep application
+# workloads off these nodes with a registration-time taint.
+k3s_node_labels: []
+k3s_node_taints:
+  - "node-role.kubernetes.io/control-plane=true:NoSchedule"

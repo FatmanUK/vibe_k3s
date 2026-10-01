@@ -1,0 +1,69 @@
+---
+# Pin releases for repeatable installs and rolling upgrades.
+k3s_version: "v1.37.0+k3s1"
+
+# Prefer Ansible Vault. Environment variables are supported for CI or an
+# initial run, but must be retained because the server token is also needed
+# for disaster recovery.
+k3s_server_token: >-
+  {{ vault_k3s_server_token
+     | default(lookup('ansible.builtin.env', 'K3S_SERVER_TOKEN'), true) }}
+k3s_agent_token: >-
+  {{ vault_k3s_agent_token
+     | default(lookup('ansible.builtin.env', 'K3S_AGENT_TOKEN'), true) }}
+
+# Set this to a stable DNS name, virtual IP, or L4 load-balancer address for
+# a fully highly available registration/API endpoint. When blank, the first
+# server's k3s_node_ip/ansible_host is used.
+k3s_fixed_registration_address: ""
+k3s_api_port: 6443
+k3s_registration_address: >-
+  {{ (k3s_fixed_registration_address | trim)
+     if (k3s_fixed_registration_address | trim | length > 0)
+     else (hostvars[groups['k3s_bootstrap'][0]].k3s_node_ip
+           | default(hostvars[groups['k3s_bootstrap'][0]].ansible_host, true)
+           | default(groups['k3s_bootstrap'][0], true)) }}
+k3s_server_url: "https://{{ k3s_registration_address }}:{{ k3s_api_port }}"
+
+# Additional certificate SANs. The registration address is always included.
+k3s_tls_sans: []
+
+# Cluster networking. These values must match on every server.
+k3s_cluster_cidr: "10.42.0.0/16"
+k3s_service_cidr: "10.43.0.0/16"
+k3s_cluster_dns: "10.43.0.10"
+k3s_cluster_domain: "cluster.local"
+k3s_flannel_backend: "vxlan"
+
+# K3s packaged components to disable, for example: [traefik, servicelb].
+k3s_disable_components: []
+
+# Protect Kubernetes Secrets in the datastore.
+k3s_secrets_encryption: true
+
+# Embedded-etcd snapshots are local to each server. Copy them off-node or
+# configure S3-compatible storage before treating them as disaster recovery.
+k3s_etcd_snapshot_schedule_cron: "0 */12 * * *"
+k3s_etcd_snapshot_retention: 14
+k3s_etcd_snapshot_compress: true
+
+# Host preparation and install behavior.
+k3s_disable_swap: true
+# Automatically disable nm-cloud-setup only on affected Ubuntu releases.
+k3s_disable_nm_cloud_setup: true
+k3s_force_disable_nm_cloud_setup: false
+k3s_reboot_after_nm_cloud_setup_disable: true
+k3s_write_kubeconfig_mode: "0600"
+k3s_install_symlink_mode: "skip"
+# Optional proxy variables for Ansible downloads and for the installer script.
+k3s_download_environment: {}
+k3s_install_environment: {}
+k3s_service_start_timeout: 300
+k3s_api_ready_retries: 60
+k3s_api_ready_delay: 5
+k3s_cluster_ready_timeout: 600
+
+# Optional per-role extension maps. Do not repeat keys already managed by the
+# template. Values may include normal K3s config.yaml options.
+k3s_server_extra_config: {}
+k3s_agent_extra_config: {}

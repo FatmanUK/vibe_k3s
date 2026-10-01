@@ -1,0 +1,112 @@
+---
+- name: Wait for all inventory nodes to register
+  ansible.builtin.command: /usr/local/bin/k3s kubectl get nodes --no-headers
+  register: k3s_registered_nodes
+  changed_when: false
+  retries: 60
+  delay: 5
+  until: >-
+    k3s_registered_nodes.rc == 0 and
+    k3s_registered_nodes.stdout_lines | length ==
+    ((groups['k3s_servers'] | length) + (groups['k3s_agents'] | length))
+
+- name: Wait for every node to be Ready
+  ansible.builtin.command: >-
+    /usr/local/bin/k3s kubectl wait --for=condition=Ready node --all
+    --timeout={{ k3s_cluster_ready_timeout }}s
+  changed_when: false
+
+- name: Wait for kube-system deployments to become Available
+  ansible.builtin.command: >-
+    /usr/local/bin/k3s kubectl wait --for=condition=Available
+    deployment --all --namespace=kube-system
+    --timeout={{ k3s_cluster_ready_timeout }}s
+  changed_when: false
+
+- name: Read embedded-etcd server nodes
+  ansible.builtin.command: >-
+    /usr/local/bin/k3s kubectl get nodes
+    -l node-role.kubernetes.io/etcd --no-headers
+  register: k3s_etcd_nodes
+  changed_when: false
+
+- name: Verify the expected embedded-etcd member count
+  ansible.builtin.assert:
+    that:
+      - k3s_etcd_nodes.stdout_lines | length == groups['k3s_servers'] | length
+    fail_msg: >-
+      The number of nodes carrying the etcd role does not match the server
+      inventory. Inspect K3s service logs before using the cluster.
+
+- name: Apply the standard worker role label through the Kubernetes API
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/k3s
+      - kubectl
+      - label
+      - node
+      - "{{ hostvars[item].k3s_node_name | default(item) }}"
+      - node-role.kubernetes.io/worker=
+      - --overwrite
+  loop: "{{ groups['k3s_agents'] }}"
+  register: k3s_worker_label_command
+  changed_when: "'not labeled' not in k3s_worker_label_command.stdout"
+
+- name: Read labeled worker nodes
+  ansible.builtin.command: >-
+    /usr/local/bin/k3s kubectl get nodes
+    -l node-role.kubernetes.io/worker --no-headers
+  register: k3s_worker_nodes
+  changed_when: false
+
+- name: Verify the expected worker count
+  ansible.builtin.assert:
+    that:
+      - k3s_worker_nodes.stdout_lines | length == groups['k3s_agents'] | length
+    fail_msg: "The number of labeled worker nodes does not match the agent inventory."
+
+- name: Capture the final node report
+  ansible.builtin.command: /usr/local/bin/k3s kubectl get nodes -o wide
+  register: k3s_node_report
+  changed_when: false
+
+- name: Create the local artifact directory
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/../artifacts"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+  when: k3s_export_artifacts | bool
+
+- name: Read the administrator kubeconfig
+  ansible.builtin.slurp:
+    src: /etc/rancher/k3s/k3s.yaml
+  register: k3s_admin_kubeconfig
+  no_log: true
+  when: k3s_export_artifacts | bool
+
+- name: Export a kubeconfig that uses the configured API endpoint
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/../artifacts/kubeconfig"
+    mode: "0600"
+    content: >-
+      {{ (k3s_admin_kubeconfig.content | b64decode)
+         | regex_replace('https://127\\.0\\.0\\.1:6443', k3s_server_url) }}
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: k3s_export_artifacts | bool
+
+- name: Export the node report
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/../artifacts/nodes.txt"
+    mode: "0644"
+    content: "{{ k3s_node_report.stdout }}\n"
+  delegate_to: localhost
+  become: false
+  when: k3s_export_artifacts | bool
+
+- name: Show the validated cluster nodes
+  ansible.builtin.debug:
+    var: k3s_node_report.stdout_lines

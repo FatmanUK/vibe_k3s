@@ -1,0 +1,116 @@
+---
+- name: Validate the requested K3s node role
+  ansible.builtin.assert:
+    that:
+      - k3s_node_role in ['server', 'agent']
+      - not (k3s_node_role == 'agent' and k3s_cluster_init | bool)
+
+- name: Set K3s service metadata
+  ansible.builtin.set_fact:
+    k3s_service_name: "{{ 'k3s' if k3s_node_role == 'server' else 'k3s-agent' }}"
+    k3s_service_unit: >-
+      /etc/systemd/system/{{ 'k3s' if k3s_node_role == 'server' else 'k3s-agent' }}.service
+
+- name: Render the K3s configuration
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: /etc/rancher/k3s/config.yaml
+    owner: root
+    group: root
+    mode: "0600"
+  register: k3s_config_result
+  no_log: true
+
+- name: Read the tagged installer checksum
+  ansible.builtin.uri:
+    url: >-
+      https://raw.githubusercontent.com/k3s-io/k3s/{{ k3s_version }}/install.sh.sha256sum
+    return_content: true
+    status_code: 200
+    timeout: 30
+  environment: "{{ k3s_download_environment }}"
+  register: k3s_installer_checksum_response
+  changed_when: false
+  retries: 5
+  delay: 5
+  until: k3s_installer_checksum_response is succeeded
+
+- name: Validate the installer checksum response
+  ansible.builtin.assert:
+    that:
+      - k3s_installer_checksum_response.content.split() | length >= 1
+      - k3s_installer_checksum_response.content.split()[0] is match('^[a-f0-9]{64}$')
+
+- name: Download the version-matched K3s installer
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/k3s-io/k3s/{{ k3s_version }}/install.sh"
+    dest: "{{ k3s_installer_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+    checksum: "sha256:{{ k3s_installer_checksum_response.content.split()[0] }}"
+    timeout: 30
+  environment: "{{ k3s_download_environment }}"
+  register: k3s_installer_download
+  retries: 5
+  delay: 5
+  until: k3s_installer_download is succeeded
+
+- name: Check the installed K3s version
+  ansible.builtin.command: /usr/local/bin/k3s --version
+  register: k3s_current_version
+  failed_when: false
+  changed_when: false
+
+- name: Check the K3s systemd unit
+  ansible.builtin.stat:
+    path: "{{ k3s_service_unit }}"
+  register: k3s_service_unit_status
+
+- name: Build the K3s installer environment
+  ansible.builtin.set_fact:
+    k3s_effective_install_environment: >-
+      {{ k3s_install_environment | combine({
+        'INSTALL_K3S_VERSION': k3s_version,
+        'INSTALL_K3S_EXEC': k3s_node_role,
+        'INSTALL_K3S_SKIP_START': 'true',
+        'INSTALL_K3S_SYMLINK': k3s_install_symlink_mode
+      }) }}
+  no_log: true
+
+- name: Install or upgrade K3s
+  ansible.builtin.command: "{{ k3s_installer_path }}"
+  environment: "{{ k3s_effective_install_environment }}"
+  register: k3s_install_result
+  when: >-
+    k3s_current_version.rc != 0 or
+    k3s_version not in k3s_current_version.stdout or
+    not k3s_service_unit_status.stat.exists
+  changed_when: true
+
+- name: Enable and start the K3s service
+  ansible.builtin.systemd_service:
+    name: "{{ k3s_service_name }}"
+    enabled: true
+    daemon_reload: "{{ k3s_install_result.changed | default(false) }}"
+    state: >-
+      {{ 'restarted'
+         if (k3s_config_result.changed or (k3s_install_result.changed | default(false)))
+         else 'started' }}
+  register: k3s_service_result
+
+- name: Wait for the local K3s API port
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ k3s_api_port }}"
+    timeout: "{{ k3s_service_start_timeout }}"
+  when: k3s_node_role == 'server'
+
+- name: Wait for the local Kubernetes API to become ready
+  ansible.builtin.command: /usr/local/bin/k3s kubectl get --raw=/readyz
+  register: k3s_api_ready
+  changed_when: false
+  retries: "{{ k3s_api_ready_retries }}"
+  delay: "{{ k3s_api_ready_delay }}"
+  until: k3s_api_ready.rc == 0 and 'ok' in k3s_api_ready.stdout
+  when: k3s_node_role == 'server'

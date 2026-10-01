@@ -1,0 +1,143 @@
+---
+- name: Require a systemd-based Linux host
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.system == 'Linux'
+      - ansible_facts.service_mgr == 'systemd'
+      - ansible_facts.os_family in ['Debian', 'RedHat']
+    fail_msg: "This project currently supports systemd-based Debian and Red Hat families."
+
+- name: Refresh the apt package index
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Install required host packages
+  ansible.builtin.package:
+    name:
+      - ca-certificates
+      - curl
+    state: present
+
+- name: Install additional kernel modules package on Red Hat family version 10+
+  ansible.builtin.package:
+    name: kernel-modules-extra
+    state: present
+  when:
+    - ansible_facts.os_family == 'RedHat'
+    - ansible_facts.distribution_major_version | int >= 10
+
+- name: Disable swap immediately
+  ansible.builtin.command: swapoff -a
+  when:
+    - k3s_disable_swap | bool
+    - ansible_facts.swaptotal_mb | int > 0
+  changed_when: true
+
+- name: Disable configured swap entries after reboot
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(\s*[^#\s]+\s+\S+\s+swap\s+.*)$'
+    replace: '# \1'
+  when: k3s_disable_swap | bool
+
+- name: Persist required kernel modules
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k3s.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      overlay
+      br_netfilter
+
+- name: Load required kernel modules
+  ansible.builtin.command: "modprobe {{ item }}"
+  loop:
+    - overlay
+    - br_netfilter
+  changed_when: false
+
+- name: Configure Kubernetes networking sysctls
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/90-k3s.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      net.ipv4.ip_forward = 1
+      net.bridge.bridge-nf-call-iptables = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+  register: k3s_sysctl_config
+
+- name: Apply Kubernetes networking sysctls
+  ansible.builtin.command: sysctl --system
+  when: k3s_sysctl_config.changed
+  changed_when: true
+
+- name: Decide whether this host needs nm-cloud-setup disabled
+  ansible.builtin.set_fact:
+    k3s_should_disable_nm_cloud_setup: >-
+      {{ k3s_disable_nm_cloud_setup | bool and (
+        k3s_force_disable_nm_cloud_setup | bool or (
+          ansible_facts.distribution == 'Ubuntu' and
+          ansible_facts.distribution_version is version('24.04', '<')
+        )
+      ) }}
+
+- name: Check whether nm-cloud-setup units are enabled
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-enabled
+      - "{{ item }}"
+  loop:
+    - nm-cloud-setup.service
+    - nm-cloud-setup.timer
+  register: k3s_nm_cloud_setup_status
+  failed_when: false
+  changed_when: false
+  when: k3s_should_disable_nm_cloud_setup | bool
+
+- name: Disable nm-cloud-setup service and timer
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - nm-cloud-setup.service
+    - nm-cloud-setup.timer
+  failed_when: false
+  when:
+    - k3s_should_disable_nm_cloud_setup | bool
+    - >-
+      k3s_nm_cloud_setup_status.results | default([])
+      | selectattr('rc', 'equalto', 0) | list | length > 0
+
+- name: Reboot after disabling nm-cloud-setup
+  ansible.builtin.reboot:
+    reboot_timeout: 600
+    msg: "Reboot initiated by Ansible after disabling nm-cloud-setup"
+  when:
+    - k3s_should_disable_nm_cloud_setup | bool
+    - k3s_reboot_after_nm_cloud_setup_disable | bool
+    - >-
+      k3s_nm_cloud_setup_status.results | default([])
+      | selectattr('rc', 'equalto', 0) | list | length > 0
+
+- name: Create K3s configuration directory
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Create local source directory
+  ansible.builtin.file:
+    path: /usr/local/src
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
